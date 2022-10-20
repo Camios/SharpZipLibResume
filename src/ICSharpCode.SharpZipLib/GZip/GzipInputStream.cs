@@ -67,8 +67,8 @@ namespace ICSharpCode.SharpZipLib.GZip
 		/// <param name="baseInputStream">
 		/// The stream to read compressed data from (baseInputStream GZIP format)
 		/// </param>
-		public GZipInputStream(Stream baseInputStream)
-			: this(baseInputStream, 4096)
+		public GZipInputStream(Stream baseInputStream, bool supportsResume = false)
+			: this(baseInputStream, 4096, supportsResume)
 		{
 		}
 
@@ -81,8 +81,8 @@ namespace ICSharpCode.SharpZipLib.GZip
 		/// <param name="size">
 		/// Size of the buffer to use
 		/// </param>
-		public GZipInputStream(Stream baseInputStream, int size)
-			: base(baseInputStream, new Inflater(true), size)
+		public GZipInputStream(Stream baseInputStream, int size, bool supportsResume)
+			: base(baseInputStream, new Inflater(true), size, supportsResume)
 		{
 		}
 
@@ -145,7 +145,7 @@ namespace ICSharpCode.SharpZipLib.GZip
 				}
 
 				// Attempting to read 0 bytes will never yield any bytesRead, so we return instead of looping forever
-				if (bytesRead > 0 || count == 0)
+				if (bytesRead > 0 || count == 0 || inputBuffer.HasBeenInterrupted)
 				{
 					return bytesRead;
 				}
@@ -175,6 +175,7 @@ namespace ICSharpCode.SharpZipLib.GZip
 			if (inputBuffer.Available <= 0)
 			{
 				inputBuffer.Fill();
+				BytesReadSoFar = inputBuffer.BytesReadSoFar;
 				if (inputBuffer.Available <= 0)
 				{
 					// No header, EOF.

@@ -1,4 +1,6 @@
 using System;
+using System.Diagnostics;
+using System.Drawing;
 using System.IO;
 using System.Security.Cryptography;
 
@@ -40,6 +42,12 @@ namespace ICSharpCode.SharpZipLib.Zip.Compression.Streams
 		}
 
 		#endregion Constructors
+
+		public void ChangeInputStream(Stream stream)
+		{
+			inputStream = stream;
+			HasBeenInterrupted = false;
+		}
 
 		/// <summary>
 		/// Get the length of bytes in the <see cref="RawData"/>
@@ -118,14 +126,30 @@ namespace ICSharpCode.SharpZipLib.Zip.Compression.Streams
 
 			while (toRead > 0 && inputStream.CanRead)
 			{
-				int count = inputStream.Read(rawData, rawLength, toRead);
+
+				int count = 0;
+				try
+				{
+					count = inputStream.Read(rawData, rawLength, toRead);
+					//Debug.WriteLine($"Fill> Read chunk {count} bytes");
+				}
+				catch (IOException ex)
+				{
+					count = 0;
+					// TODO if supports resume otherwise rethrow?
+					HasBeenInterrupted = true;
+					Debug.WriteLine($"Fill> IOException {ex.Message}");
+				}
 				if (count <= 0)
 				{
 					break;
 				}
+
 				rawLength += count;
 				toRead -= count;
 			}
+			BytesReadSoFar += rawLength;
+			Debug.WriteLine($"Fill> Read {rawLength} bytes. Total {BytesReadSoFar}");
 
 			if (cryptoTransform != null)
 			{
@@ -301,6 +325,9 @@ namespace ICSharpCode.SharpZipLib.Zip.Compression.Streams
 			}
 		}
 
+		public int BytesReadSoFar { get; private set; }
+		public bool HasBeenInterrupted { get; set; }
+
 		#region Instance Fields
 
 		private int rawLength;
@@ -338,8 +365,8 @@ namespace ICSharpCode.SharpZipLib.Zip.Compression.Streams
 		/// <param name = "baseInputStream">
 		/// The InputStream to read bytes from
 		/// </param>
-		public InflaterInputStream(Stream baseInputStream)
-			: this(baseInputStream, new Inflater(), 4096)
+		public InflaterInputStream(Stream baseInputStream, bool supportsResume = false)
+			: this(baseInputStream, new Inflater(), 4096, supportsResume)
 		{
 		}
 
@@ -353,8 +380,8 @@ namespace ICSharpCode.SharpZipLib.Zip.Compression.Streams
 		/// <param name = "inf">
 		/// The decompressor used to decompress data read from baseInputStream
 		/// </param>
-		public InflaterInputStream(Stream baseInputStream, Inflater inf)
-			: this(baseInputStream, inf, 4096)
+		public InflaterInputStream(Stream baseInputStream, Inflater inf, bool supportsResume = false)
+			: this(baseInputStream, inf, 4096, supportsResume)
 		{
 		}
 
@@ -371,7 +398,7 @@ namespace ICSharpCode.SharpZipLib.Zip.Compression.Streams
 		/// <param name = "bufferSize">
 		/// Size of the buffer to use
 		/// </param>
-		public InflaterInputStream(Stream baseInputStream, Inflater inflater, int bufferSize)
+		public InflaterInputStream(Stream baseInputStream, Inflater inflater, int bufferSize, bool supportsResume = false)
 		{
 			if (baseInputStream == null)
 			{
@@ -392,9 +419,27 @@ namespace ICSharpCode.SharpZipLib.Zip.Compression.Streams
 			this.inf = inflater;
 
 			inputBuffer = new InflaterInputBuffer(baseInputStream, bufferSize);
+			_supportsResume = supportsResume;
 		}
 
 		#endregion Constructors
+
+		/// <summary>
+		/// Change the input stream (supports interrupted reading e.g. HTTP disconnection and retry from last position).
+		/// </summary>
+		/// <param name="stream">A stream whose position corresponds to <see cref="BytesReadSoFar"/> of the previous input stream.</param>
+		public void ChangeInputStream(Stream stream)
+		{
+			baseInputStream = stream;
+			inputBuffer.ChangeInputStream(stream);
+		}
+
+		/// <summary>
+		/// Get or private set the amount of bytes that have been read from the input stream so far.
+		/// </summary>
+		public long BytesReadSoFar { get; protected set; }
+
+		private bool _supportsResume;
 
 		/// <summary>
 		/// Gets or sets a flag indicating ownership of underlying stream.
@@ -418,6 +463,7 @@ namespace ICSharpCode.SharpZipLib.Zip.Compression.Streams
 		/// </exception>
 		public long Skip(long count)
 		{
+			// TODO test if this method is called tyically (I suspect not)
 			if (count <= 0)
 			{
 				throw new ArgumentOutOfRangeException(nameof(count));
@@ -488,7 +534,8 @@ namespace ICSharpCode.SharpZipLib.Zip.Compression.Streams
 			if (inputBuffer.Available <= 0)
 			{
 				inputBuffer.Fill();
-				if (inputBuffer.Available <= 0)
+				BytesReadSoFar = inputBuffer.BytesReadSoFar;
+				if (inputBuffer.Available <= 0 && /* TODO !_supportsResume && */ !inputBuffer.HasBeenInterrupted)
 				{
 					throw new SharpZipBaseException("Unexpected EOF");
 				}
@@ -662,7 +709,7 @@ namespace ICSharpCode.SharpZipLib.Zip.Compression.Streams
 				offset += bytesRead;
 				remainingBytes -= bytesRead;
 
-				if (remainingBytes == 0 || inf.IsFinished)
+				if (remainingBytes == 0 || inf.IsFinished || inputBuffer.HasBeenInterrupted)
 				{
 					break;
 				}
